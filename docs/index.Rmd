@@ -1,0 +1,287 @@
+---
+title: "Methodology"
+output: html_document
+date: "2023-12-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, error = FALSE)
+```
+
+The files used in this code will be available on [github](https://github.com/ebranch13/petersburg-micromobility/tree/main/shapefiles).
+
+Packages needed
+
+```{r}
+library(geojsonio)
+library(geojson)
+library(geojsonR)
+library(geojsonsf)
+library(sf)
+library(dplyr)
+library(tidyverse)
+library(tidycensus)
+library(raster)
+library(tmap)
+library(viridis)
+library(osrm)
+library(r5r)
+library(mapboxapi)
+library(fasterize)
+library(leafsync)
+library(ggplot2)
+```
+
+We categorized the likely destinations into three categories: bus stops, activity centers, and schools. Taking reference from [Open Street Map](https://wiki.openstreetmap.org/wiki/Map_features), we took the relevant keys for each category which we subsequently ran in [Overpass Turbo](https://overpass-turbo.eu/) to obtain the Geojson files needed to be uploaded into R.
+
+We then imported all the geojson files we downloaded from overpass turbo of the respective keys as well as the city boundary of Petersburg that was provided by Professor Bev Wilson.
+
+```{r}
+city_boundary_0 <- st_read("/Users/sylvia/Desktop/Kernel_Density/petersburg_city_boundary_TIGER_2022.shp")
+amenity_school <- st_read("/Users/sylvia/Desktop/School/amenity.geojson")
+amenity <- st_read("/Users/sylvia/Desktop/Activity Center/amenity.geojson")
+building <- st_read("/Users/sylvia/Desktop/Activity Center/buildings.geojson")
+craft <- st_read("/Users/sylvia/Desktop/Activity Center/craft.geojson")
+healthcare <- st_read("/Users/sylvia/Desktop/Activity Center/healthcare_clinic_pharmacy.geojson")
+historic <- st_read("/Users/sylvia/Desktop/Activity Center/historic.geojson")
+leisure <- st_read("/Users/sylvia/Desktop/Activity Center/leisure.geojson")
+office <- st_read("/Users/sylvia/Desktop/Activity Center/office.geojson")
+shop <- st_read("/Users/sylvia/Desktop/Activity Center/shop.geojson")
+tourism <- st_read("/Users/sylvia/Desktop/Activity Center/tourism.geojson")
+```
+
+After importing all the geojson files, we proceeded to do some data cleaning to exclude entries that we feel were not considered to be likely destinations for people utilizing micromobility devices.
+
+```{r}
+amenity_final <- amenity%>%filter(amenity != "parking" & amenity != "school" & amenity != "college" & amenity != "university" & amenity != "fuel" & amenity != "car_wash" & amenity != "fire_station" & amenity != "parking_space" & amenity != "loading_dock" & amenity != "bench" & amenity != "compressed_air" & amenity != "vacuum_cleaner" & amenity != "waste_disposal" & amenity != "recycling")
+  
+leisure_final <- leisure%>%filter(leisure != "slipway" & leisure != "picnic_table")
+```
+
+We realized that some of the locations in the geojson files we downloaded from overpass turbo were polygons or multipolygons. In order to run the isochrone code, we would have to convert these polygons and multipolygons into points. We decided to use the centroid of these polygons and multipolygons for our analysis.
+
+```{r}
+amenity_school_as_point <- st_centroid(amenity_school)
+amenity_as_point <- st_centroid(amenity_final)
+building_as_point <- st_centroid(building)
+craft_as_point <- st_centroid(craft)
+healthcare_as_point <- st_centroid(healthcare)
+historic_as_point <- st_centroid(historic)
+leisure_as_point <- st_centroid(leisure_final)
+office_as_point <- st_centroid(office)
+shop_as_point <- st_centroid(shop)
+tourism_as_point <- st_centroid(tourism)
+```
+
+The geojson files we imported had varying properties included for each of them. In order to be able to combine these geojson files into a singular activity center data set and for the purpose of our analysis, we chose to only include the unique id, name, and coordinates of the locations. 
+
+```{r}
+schools_total <- amenity_school_as_point %>% dplyr::select(id, name)
+amenity_to_combine <- amenity_as_point %>% dplyr::select(id)
+building_to_combine <- building_as_point %>% dplyr::select(id)
+craft_to_combine <- craft_as_point %>% dplyr::select(id)
+healthcare_to_combine <- healthcare_as_point %>% dplyr::select(id)
+historic_to_combine <- historic_as_point %>% dplyr::select(id)
+leisure_to_combine <- leisure_as_point %>% dplyr::select(id)
+office_to_combine <- office_as_point %>% dplyr::select(id)
+shop_to_combine <- shop_as_point %>% dplyr::select(id)
+tourism_to_combine <- tourism_as_point %>% dplyr::select(id)
+```
+
+
+The data we downloaded from overpass turbo was slightly outdated for the schools so we cleaned it up based on the feedback from the Planning Department in Petersburg. We also made sure to remove repeated school locations and to isolate Virginia State University (VSU) from the other schools in Petersburg.
+
+```{r}
+schools <- na.omit(schools_total)
+schools <- distinct(schools, name, .keep_all = TRUE)
+VSU <- subset(schools, name == "Virginia State University")
+schools <- subset(schools, name != "Virginia State University" & name != "Peabody Middle School" & name != "Anna P. Bolling Junior High School" & name != "Robert E Lee Elementary School")
+```
+
+Here is a map of the schools in Peterburg.
+
+```{r}
+tmap_mode("view")
+
+tm_shape(shp = schools, name = "Schools") + tm_dots(size = 0.05, col = "red") + tm_shape(shp = city_boundary_0, name = "City of Petersburg Boundary") + tm_borders(col = "blue") + tm_basemap(c("OpenStreetMap", "Esri.WorldGrayCanvas", "CartoDB.Positron", "Esri.WorldTopoMap"))
+```
+
+For the Activity Centers, we combined the various keys we took from Open Street Map which includes: amenity, building, craft, healthcare, historic, leisure, office, shop, tourism. We chose to include these keys based on the Planning Advisory Service (PAS) Memo Identifying Activity Centers: A How-To Guide published by the American Planning Association.
+
+```{r}
+activity_center_total <- bind_rows(amenity_to_combine, building_to_combine, craft_to_combine, healthcare_to_combine, historic_to_combine, leisure_to_combine, office_to_combine, shop_to_combine, tourism_to_combine)
+```
+
+Within the combined activity center dataset, we then proceeded to remove duplicates of locations.
+
+```{r}
+activity_center <- distinct(activity_center_total, geometry, .keep_all = TRUE)
+```
+
+A heat map to visualize and highlight areas that have a higher density of likely destinations by micromobility would be useful for activity center analysis. Using the kernel density function below, we were able to produce areas of activity centers that correlated to the density of likely destinations. By varying the degree of density, we were able to create multiple layers with different areas to represent the activity center.
+
+```{r}
+st_kde <- function(points, cellsize, bandwith, extent = NULL){
+  require(MASS)
+  require(raster)
+  require(sf)
+  if(is.null(extent)){
+    extent_vec <- st_bbox(points)[c(1,3,2,4)]
+  } else{
+    extent_vec <- st_bbox(extent)[c(1,3,2,4)]
+  }
+  
+  n_y <- ceiling((extent_vec[4]-extent_vec[3])/cellsize)
+  n_x <- ceiling((extent_vec[2]-extent_vec[1])/cellsize)
+  
+  extent_vec[2] <- extent_vec[1]+(n_x*cellsize)-cellsize
+  extent_vec[4] <- extent_vec[3]+(n_y*cellsize)-cellsize
+  
+  coords <- st_coordinates(points)
+  matrix <- kde2d(coords[,1],coords[,2],h = bandwith,n = c(n_x,n_y),lims = extent_vec)
+  raster(matrix)
+}
+
+
+# Call the function to generate several raster representations
+# Note that the second argument is the cellsize and the 
+# third argument is the bandwidth
+kde_1 <- st_kde(activity_center, 0.0005, 0.01)
+kde_2 <- st_kde(activity_center, 0.0005, 0.001)
+kde_3 <- st_kde(activity_center, 0.00005, 0.01)
+
+kde_filtered <- kde_3
+kde_filtered[kde_filtered < 500] <- NA
+
+kde_filtered <- kde_3
+kde_filtered[kde_filtered < 1000] <- NA
+
+kde_filtered <- kde_3
+kde_filtered[kde_filtered < 200] <- NA
+
+#Convert the raster to a vector (polygon)
+activity_center_heat_polygons <- rasterToPolygons(kde_filtered, fun = function(x){x > 500}, n=4, na.rm=TRUE, digits=12, dissolve=TRUE)
+activity_center_heat_polygons_sf <- st_as_sf(activity_center_heat_polygons)
+activity_center_to_plot_sf <- st_union(activity_center_heat_polygons_sf, by_feature = FALSE)
+st_crs(activity_center_to_plot_sf) <- st_crs(activity_center) 
+
+tmap_mode("view")
+
+tm_shape(shp = activity_center_to_plot_sf, name = "Activity Center Density As Polygon") +
+  tm_polygons(col = "green4", alpha = 0.3,
+              colorNA = "white",
+              textNA = "Missing data.", 
+              title = "Intensity", 
+              id = NA) +
+  tm_shape(shp = activity_center, name = "Activity Centers") +
+  tm_dots(size = 0.01, col = "red") +
+  tm_shape(shp = city_boundary_0, name = "City of Petersburg Boundary") +
+  tm_borders(col = "blue") + 
+  tm_basemap(c("OpenStreetMap", "Esri.WorldGrayCanvas", "CartoDB.Positron", "Esri.WorldTopoMap"))
+```
+
+For the isochrone analysis, we decided that the kernel density of the middle layer of activity centers was representative of the spread of the likely destinations in Petersburg. We proceeded to find the centroids of the activity centers from this layer. 
+
+```{r}
+activity_center_500 <- st_read("/Users/sylvia/Desktop/Activity Center/activity_center_heat_map_500.geojson")
+activity_center_500_list <- st_cast(activity_center_500, "POLYGON")
+
+centres <-list()
+
+for (i in 1:length(activity_center_500_list)) {
+  centres[[i]] <- activity_center_500_list[[i]] %>% 
+    sf::st_as_sf() %>%
+    sf::st_centroid() %>%       # get centroids 
+    as(.,'Spatial') 
+
+}
+
+centres_data <- as.data.frame(centres)
+```
+
+We used the Map Box data to run the isochrone analysis for bus stops, schools, and activity centers respectively. Here is an example of the isochrone analysis for bus stops.
+
+```{r}
+my_token <- readRDS("/Users/sylvia/Desktop/emily_mapbox_token.rds")
+
+bustops <- st_read("/Users/sylvia/Desktop/Methodology/newest_bus_stops/newest_bus_stops.shp")
+
+stops <- read_delim("/Users/sylvia/Desktop/Methodology/petersburg-va-us--flex-v2 (1)/stops.txt", delim = ",")
+stops_sf <- st_as_sf(stops, coords = c("stop_lon","stop_lat"), crs = st_crs(bustops))
+
+file_isochrone3 <- mb_isochrone(
+  stops_sf, 
+  time = c(11), 
+  profile = "cycling",
+  access_token = my_token,
+  id_column = "stop_id"
+)
+
+ggplot() +
+  geom_sf(data = file_isochrone3, fill = "purple", alpha = 0.1) +
+  #geom_sf(data = city_boundary_0, fill = "gray", color = "gray", linewidth = 0.5) +
+  geom_sf(data = stops_sf, color = "red") +
+  geom_sf(data= bustops, color = "black") +
+  #geom_sf(data = file_isochrone3, aes(color = "purple"), fill = "purple", linewidth = 0.3, alpha = 0.5) + 
+  #scale_color_manual(name = "Time (mins)", values = c("purple"), labels = c("11")) + 
+  #geom_sf(data = the_data, color = "black") +
+  theme_void() +
+  labs(caption = "Isochrones around Bus Stops")
+
+```
+
+The demographics data was pulled from the 2021 American Community Survey (ACS) for the ratio of low income households in Petersburg and the ratio of households with no vehicles. We needed to sign up for a Census API Key and include our own API code to obatin the demographic data. We also created a Transit Dependent Inference (TDI) which was the average between the two demographics for each block group.
+
+```{r}
+census_api_key <- Sys.getenv("CENSUS_API_KEY")
+
+pct_low_income <- get_acs( geography = "block group", 
+                           variables = c(bl10 = "B19101_002", ten15 = "B19101_003", fift20 = "B19101_004", 
+                                         twe25 = "B19101_005", t530 = "B19101_006", thr35 = "B19101_007", 
+                                         tot_pop = "B19101_001"),
+                           county = 730,
+                           # place = "3500",
+                           state = "VA", 
+                           year = 2021,
+                           geometry = TRUE)
+
+no_veh_avail <- get_acs( geography = "block group", 
+                         variables = c(owner_no_veh = "B25044_003", renter_no_veh= "B25044_010", tot_pop = "B25044_001"),
+                         county = 730,
+                         # place = "3500",
+                         state = "VA", 
+                         year = 2021,
+                         geometry = TRUE)
+
+
+
+pct_low_income_pvt <- pivot_wider(pct_low_income, id_cols = c("NAME", "GEOID", "geometry"), 
+                                  names_from = "variable", values_from = "estimate")
+pct_low_income_pvt <- mutate(pct_low_income_pvt, bl_80AMI = bl10 + ten15 + fift20 + twe25 +t530 + thr35)
+pct_low_income_pvt <- mutate(pct_low_income_pvt, pctLowInc = (bl_80AMI/ tot_pop) * 100)
+pct_low_income_pvt <- subset(pct_low_income_pvt, select = c("NAME", "GEOID", "bl_80AMI", "tot_pop", "pctLowInc", "geometry"))
+
+
+no_veh_pvt <- pivot_wider(no_veh_avail, id_cols = c("NAME", "GEOID", "geometry"), 
+                          names_from = "variable", values_from = "estimate")
+no_veh <- subset(no_veh_pvt, select = c("NAME", "GEOID", "owner_no_veh", "renter_no_veh", "tot_pop"))
+no_veh <- mutate(no_veh, "tot_no_veh" = no_veh$owner_no_veh + no_veh$renter_no_veh)
+no_veh <- mutate(no_veh, "pct_no_veh" = (no_veh$tot_no_veh / no_veh$tot_pop)*100)
+no_veh <- st_drop_geometry(no_veh)
+no_veh_to_combine <- subset(no_veh, select = c("NAME", "pct_no_veh"))
+
+
+no_veh_low_inc <- merge(pct_low_income_pvt, no_veh_to_combine, by = "NAME")
+no_veh_low_inc <- mutate(no_veh_low_inc, "TDI" = (no_veh_low_inc$pctLowInc + no_veh_low_inc$pct_no_veh)/ 2)
+
+ggplot() +
+  geom_sf(data = no_veh_low_inc, aes(fill = TDI)) +
+  theme_void() +
+  labs(title = "Transit Dependent Inference", fill = "TDI") +
+  scale_fill_viridis_c() +
+  theme(legend.position = "bottom")
+```
+
+Lastly, equity zones were identified to be areas that had a Transit Dependent Inference of more than 30.
+
+We subsequently exported the relevant files as geojson files to be uploaded onto ArcGIS to create our web maps and dashboard.
