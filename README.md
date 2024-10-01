@@ -12,6 +12,7 @@
 <ol> 4. Consider demographics- will the groups most likely to benefit from micromobility have access?</ol>
 
 <a href = "https://uvalibrary.maps.arcgis.com/apps/dashboards/7aeaea0d64f1486894a0f767dcd378e6"> Dashboard Link</a>
+
 <a href = "https://ebranch13.github.io/petersburg-micromobility/"> Source Code Walkthrough </a>
 
 
